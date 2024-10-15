@@ -7,7 +7,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import List, Literal
 
+import ChatTTS
 import gradio as gr
+import torchaudio
 
 from loguru import logger
 from openai import OpenAI
@@ -18,8 +20,11 @@ from tenacity import retry, retry_if_exception_type
 
 import re
 
+import doubao_tts
+
+
 def read_readme():
-    readme_path = Path("README.md")
+    readme_path = Path("test.md")
     if readme_path.exists():
         with open(readme_path, "r") as file:
             content = file.read()
@@ -28,10 +33,11 @@ def read_readme():
             return content
     else:
         return "README.md not found. Please check the repository for more information."
-        
+
+
 # Define multiple sets of instruction templates
 INSTRUCTION_TEMPLATES = {
-################# PODCAST ##################
+    ################# PODCAST ##################
     "podcast": {
         "intro": """Your task is to take the input text provided and turn it into an lively, engaging, informative podcast dialogue, in the style of NPR. The input text may be messy or unstructured, as it could come from a variety of sources like PDFs or web pages. 
 
@@ -65,7 +71,7 @@ At the end of the dialogue, have the host and guest speakers naturally summarize
 The podcast should have around 20000 words.
 """,
     },
-################# MATERIAL DISCOVERY SUMMARY ##################
+    ################# MATERIAL DISCOVERY SUMMARY ##################
     "SciAgents material discovery summary": {
         "intro": """Your task is to take the input text provided and turn it into a lively, engaging conversation between a professor and a student in a panel discussion that describes a new material. The professor acts like Richard Feynman, but you never mention the name.
 
@@ -105,7 +111,7 @@ At the end of the dialogue, have the host and guest speakers naturally summarize
 The conversation should have around 20000 words.
 """
     },
-################# LECTURE ##################
+    ################# LECTURE ##################
     "lecture": {
         "intro": """You are Professor Richard Feynman. Your task is to develop a script for a lecture. You never mention your name.
 
@@ -146,8 +152,8 @@ Avoid making it sound like an obvious recap - the goal is to reinforce the centr
 The lecture should have around 20000 words.
 """,
     },
-################# SUMMARY ##################
-        "summary": {
+    ################# SUMMARY ##################
+    "summary": {
         "intro": """Your task is to develop a summary of a paper. You never mention your name.
 
 Don't worry about the formatting issues or any irrelevant information; your goal is to extract the key points, identify definitions, and interesting facts that need to be summarized.
@@ -180,8 +186,8 @@ Naturally summarize the main insights and takeaways from the summary. This shoul
 The summary should have around 1024 words.
 """,
     },
-################# SHORT SUMMARY ##################
-        "short summary": {
+    ################# SHORT SUMMARY ##################
+    "short summary": {
         "intro": """Your task is to develop a summary of a paper. You never mention your name.
 
 Don't worry about the formatting issues or any irrelevant information; your goal is to extract the key points, identify definitions, and interesting facts that need to be summarized.
@@ -215,16 +221,16 @@ The summary should have around 256 words.
 """,
     },
 
-################# PODCAST French ##################
-"podcast (French)": {
-    "intro": """Votre tâche consiste à prendre le texte fourni et à le transformer en un dialogue de podcast vivant, engageant et informatif, dans le style de NPR. Le texte d'entrée peut être désorganisé ou non structuré, car il peut provenir de diverses sources telles que des fichiers PDF ou des pages web.
+    ################# PODCAST French ##################
+    "podcast (French)": {
+        "intro": """Votre tâche consiste à prendre le texte fourni et à le transformer en un dialogue de podcast vivant, engageant et informatif, dans le style de NPR. Le texte d'entrée peut être désorganisé ou non structuré, car il peut provenir de diverses sources telles que des fichiers PDF ou des pages web.
 
 Ne vous inquiétez pas des problèmes de formatage ou des informations non pertinentes ; votre objectif est d'extraire les points clés, d'identifier les définitions et les faits intéressants qui pourraient être discutés dans un podcast.
 
 Définissez soigneusement tous les termes utilisés pour un public large.
 """,
-    "text_instructions": "Tout d'abord, lisez attentivement le texte d'entrée et identifiez les principaux sujets, points clés et faits ou anecdotes intéressants. Réfléchissez à la manière dont vous pourriez présenter ces informations de manière amusante et engageante, convenant à une présentation de haute qualité.",
-    "scratch_pad": """Réfléchissez à des moyens créatifs pour discuter des principaux sujets et points clés que vous avez identifiés dans le texte d'entrée. Envisagez d'utiliser des analogies, des exemples, des techniques de narration ou des scénarios hypothétiques pour rendre le contenu plus accessible et attrayant pour les auditeurs.
+        "text_instructions": "Tout d'abord, lisez attentivement le texte d'entrée et identifiez les principaux sujets, points clés et faits ou anecdotes intéressants. Réfléchissez à la manière dont vous pourriez présenter ces informations de manière amusante et engageante, convenant à une présentation de haute qualité.",
+        "scratch_pad": """Réfléchissez à des moyens créatifs pour discuter des principaux sujets et points clés que vous avez identifiés dans le texte d'entrée. Envisagez d'utiliser des analogies, des exemples, des techniques de narration ou des scénarios hypothétiques pour rendre le contenu plus accessible et attrayant pour les auditeurs.
 
 Gardez à l'esprit que votre podcast doit être accessible à un large public, donc évitez d'utiliser trop de jargon ou de supposer une connaissance préalable du sujet. Si nécessaire, trouvez des moyens d'expliquer brièvement les concepts complexes en termes simples.
 
@@ -236,9 +242,9 @@ Définissez clairement tous les termes utilisés et prenez le temps d'expliquer 
 
 Faites en sorte que ce soit amusant et captivant.
 """,
-    "prelude": """Maintenant que vous avez réfléchi à des idées et créé une esquisse générale, il est temps d'écrire le dialogue réel du podcast. Visez un flux naturel et conversationnel entre l'hôte et tout invité. Intégrez les meilleures idées de votre session de brainstorming et assurez-vous d'expliquer tous les sujets complexes de manière compréhensible.
+        "prelude": """Maintenant que vous avez réfléchi à des idées et créé une esquisse générale, il est temps d'écrire le dialogue réel du podcast. Visez un flux naturel et conversationnel entre l'hôte et tout invité. Intégrez les meilleures idées de votre session de brainstorming et assurez-vous d'expliquer tous les sujets complexes de manière compréhensible.
 """,
-    "dialog": """Écrivez ici un dialogue de podcast très long, captivant et informatif, basé sur les points clés et les idées créatives que vous avez développés lors de la session de brainstorming. Utilisez un ton conversationnel et incluez tout contexte ou explication nécessaire pour rendre le contenu accessible à un public général.
+        "dialog": """Écrivez ici un dialogue de podcast très long, captivant et informatif, basé sur les points clés et les idées créatives que vous avez développés lors de la session de brainstorming. Utilisez un ton conversationnel et incluez tout contexte ou explication nécessaire pour rendre le contenu accessible à un public général.
 
 Ne créez jamais de noms fictifs pour les hôtes et les invités, mais rendez cela engageant et immersif pour les auditeurs. N'incluez pas de marqueurs entre crochets comme [Hôte] ou [Invité]. Conceptionnez votre sortie pour être lue à haute voix – elle sera directement convertie en audio.
 
@@ -248,18 +254,18 @@ Faites en sorte que le dialogue soit aussi long et détaillé que possible, tout
 
 Le podcast doit comporter environ 20 000 mots.
 """,
-},
+    },
 
-################# PODCAST GERMAN ##################
-"podcast (German)": {
-    "intro": """Deine Aufgabe ist es, den bereitgestellten Text in einen lebendigen, fesselnden und informativen Podcast-Dialog im Stil von NPR zu verwandeln. Der Eingabetext kann unstrukturiert oder chaotisch sein, da er aus verschiedenen Quellen wie PDFs oder Webseiten stammen kann.
+    ################# PODCAST GERMAN ##################
+    "podcast (German)": {
+        "intro": """Deine Aufgabe ist es, den bereitgestellten Text in einen lebendigen, fesselnden und informativen Podcast-Dialog im Stil von NPR zu verwandeln. Der Eingabetext kann unstrukturiert oder chaotisch sein, da er aus verschiedenen Quellen wie PDFs oder Webseiten stammen kann.
 
 Mach dir keine Sorgen über Formatierungsprobleme oder irrelevante Informationen; dein Ziel ist es, die wichtigsten Punkte zu extrahieren, Definitionen und interessante Fakten zu identifizieren, die in einem Podcast besprochen werden könnten.
 
 Definiere alle verwendeten Begriffe sorgfältig für ein breites Publikum.
 """,
-    "text_instructions": "Lies zuerst den Eingabetext sorgfältig durch und identifiziere die Hauptthemen, Schlüsselpunkte und interessante Fakten oder Anekdoten. Überlege, wie du diese Informationen auf unterhaltsame und ansprechende Weise präsentieren könntest, sodass sie für eine hochwertige Präsentation geeignet sind.",
-    "scratch_pad": """Denke kreativ darüber nach, wie du die Hauptthemen und Schlüsselpunkte, die du im Eingabetext identifiziert hast, diskutieren könntest. Verwende Analogien, Beispiele, Erzähltechniken oder hypothetische Szenarien, um den Inhalt für die Zuhörer nachvollziehbarer und ansprechender zu gestalten.
+        "text_instructions": "Lies zuerst den Eingabetext sorgfältig durch und identifiziere die Hauptthemen, Schlüsselpunkte und interessante Fakten oder Anekdoten. Überlege, wie du diese Informationen auf unterhaltsame und ansprechende Weise präsentieren könntest, sodass sie für eine hochwertige Präsentation geeignet sind.",
+        "scratch_pad": """Denke kreativ darüber nach, wie du die Hauptthemen und Schlüsselpunkte, die du im Eingabetext identifiziert hast, diskutieren könntest. Verwende Analogien, Beispiele, Erzähltechniken oder hypothetische Szenarien, um den Inhalt für die Zuhörer nachvollziehbarer und ansprechender zu gestalten.
 
 Behalte im Hinterkopf, dass dein Podcast einem breiten Publikum zugänglich sein sollte, daher vermeide zu viel Fachjargon oder die Annahme von Vorwissen über das Thema. Falls nötig, überlege dir Möglichkeiten, um komplexe Konzepte kurz und einfach zu erklären.
 
@@ -271,9 +277,9 @@ Schreibe deine Brainstorming-Ideen und eine grobe Gliederung für den Podcast-Di
 
 Sorge dafür, dass es unterhaltsam und spannend ist.
 """,
-    "prelude": """Nun, da du Ideen gesammelt und eine grobe Gliederung erstellt hast, ist es an der Zeit, den eigentlichen Podcast-Dialog zu schreiben. Strebe einen natürlichen, konversationellen Fluss zwischen dem Moderator und etwaigen Gästen an. Nutze die besten Ideen aus deiner Brainstorming-Sitzung und erkläre alle komplexen Themen auf eine leicht verständliche Weise.
+        "prelude": """Nun, da du Ideen gesammelt und eine grobe Gliederung erstellt hast, ist es an der Zeit, den eigentlichen Podcast-Dialog zu schreiben. Strebe einen natürlichen, konversationellen Fluss zwischen dem Moderator und etwaigen Gästen an. Nutze die besten Ideen aus deiner Brainstorming-Sitzung und erkläre alle komplexen Themen auf eine leicht verständliche Weise.
 """,
-    "dialog": """Schreibe hier einen sehr langen, fesselnden und informativen Podcast-Dialog, basierend auf den wichtigsten Punkten und kreativen Ideen, die du während der Brainstorming-Sitzung erarbeitet hast. Verwende einen konversationellen Ton und füge alle notwendigen Kontexte oder Erklärungen hinzu, um den Inhalt für ein allgemeines Publikum zugänglich zu machen.
+        "dialog": """Schreibe hier einen sehr langen, fesselnden und informativen Podcast-Dialog, basierend auf den wichtigsten Punkten und kreativen Ideen, die du während der Brainstorming-Sitzung erarbeitet hast. Verwende einen konversationellen Ton und füge alle notwendigen Kontexte oder Erklärungen hinzu, um den Inhalt für ein allgemeines Publikum zugänglich zu machen.
 
 Verwende niemals erfundene Namen für die Moderatoren und Gäste, aber gestalte es zu einem fesselnden und immersiven Erlebnis für die Zuhörer. Verwende keine Platzhalter wie [Moderator] oder [Gast]. Dein Output wird direkt in Audio umgewandelt, daher entwerfe den Dialog so, dass er laut vorgelesen werden kann.
 
@@ -284,17 +290,17 @@ Am Ende des Dialogs sollen der Moderator und die Gäste die wichtigsten Erkenntn
 Der Podcast sollte etwa 20.000 Wörter umfassen.
 """,
     },
-    
-################# PODCAST SPANISH ##################
-"podcast (Spanish)": {
-    "intro": """Tu tarea es tomar el texto de entrada proporcionado y convertirlo en un diálogo de podcast animado, atractivo e informativo, al estilo de NPR. El texto de entrada puede estar desordenado o poco estructurado, ya que podría provenir de diversas fuentes como archivos PDF o páginas web.
+
+    ################# PODCAST SPANISH ##################
+    "podcast (Spanish)": {
+        "intro": """Tu tarea es tomar el texto de entrada proporcionado y convertirlo en un diálogo de podcast animado, atractivo e informativo, al estilo de NPR. El texto de entrada puede estar desordenado o poco estructurado, ya que podría provenir de diversas fuentes como archivos PDF o páginas web.
 
 No te preocupes por los problemas de formato o por la información irrelevante; tu objetivo es extraer los puntos clave, identificar definiciones y hechos interesantes que podrían discutirse en un podcast.
 
 Define cuidadosamente todos los términos utilizados para una audiencia amplia.
 """,
-    "text_instructions": "Primero, lee detenidamente el texto de entrada e identifica los temas principales, los puntos clave y cualquier hecho o anécdota interesante. Piensa en cómo podrías presentar esta información de una manera divertida y atractiva, adecuada para una presentación de alta calidad.",
-    "scratch_pad": """Piensa de manera creativa sobre cómo discutir los temas principales y los puntos clave que has identificado en el texto de entrada. Considera usar analogías, ejemplos, técnicas narrativas o escenarios hipotéticos para hacer que el contenido sea más comprensible y atractivo para los oyentes.
+        "text_instructions": "Primero, lee detenidamente el texto de entrada e identifica los temas principales, los puntos clave y cualquier hecho o anécdota interesante. Piensa en cómo podrías presentar esta información de una manera divertida y atractiva, adecuada para una presentación de alta calidad.",
+        "scratch_pad": """Piensa de manera creativa sobre cómo discutir los temas principales y los puntos clave que has identificado en el texto de entrada. Considera usar analogías, ejemplos, técnicas narrativas o escenarios hipotéticos para hacer que el contenido sea más comprensible y atractivo para los oyentes.
 
 Ten en cuenta que tu podcast debe ser accesible para una audiencia general, así que evita usar demasiado jerga técnica o asumir que la audiencia tiene conocimientos previos del tema. Si es necesario, piensa en formas de explicar brevemente cualquier concepto complejo en términos sencillos.
 
@@ -306,9 +312,9 @@ Escribe tus ideas de brainstorming y un esquema general del diálogo del podcast
 
 Asegúrate de que sea divertido y emocionante.
 """,
-    "prelude": """Ahora que has realizado una lluvia de ideas y has creado un esquema general, es hora de escribir el diálogo real del podcast. Apunta a un flujo natural y conversacional entre el presentador y cualquier invitado. Incorpora las mejores ideas de tu sesión de lluvia de ideas y asegúrate de explicar cualquier tema complejo de una manera fácil de entender.
+        "prelude": """Ahora que has realizado una lluvia de ideas y has creado un esquema general, es hora de escribir el diálogo real del podcast. Apunta a un flujo natural y conversacional entre el presentador y cualquier invitado. Incorpora las mejores ideas de tu sesión de lluvia de ideas y asegúrate de explicar cualquier tema complejo de una manera fácil de entender.
 """,
-    "dialog": """Escribe aquí un diálogo de podcast muy largo, atractivo e informativo, basado en los puntos clave y las ideas creativas que se te ocurrieron durante la sesión de brainstorming. Usa un tono conversacional e incluye el contexto o las explicaciones necesarias para que el contenido sea accesible a una audiencia general.
+        "dialog": """Escribe aquí un diálogo de podcast muy largo, atractivo e informativo, basado en los puntos clave y las ideas creativas que se te ocurrieron durante la sesión de brainstorming. Usa un tono conversacional e incluye el contexto o las explicaciones necesarias para que el contenido sea accesible a una audiencia general.
 
 Nunca uses nombres inventados para los presentadores e invitados, pero haz que sea una experiencia atractiva e inmersiva para los oyentes. No incluyas ningún marcador de posición entre corchetes como [Presentador] o [Invitado]. Diseña tu salida para que sea leída en voz alta, ya que se convertirá directamente en audio.
 
@@ -320,16 +326,16 @@ El podcast debe tener alrededor de 20,000 palabras.
 """,
     },
 
-################# PODCAST Portuguese ##################
-"podcast (Portuguese)": {
-    "intro": """Sua tarefa é pegar o texto de entrada fornecido e transformá-lo em um diálogo de podcast animado, envolvente e informativo, no estilo da NPR. O texto de entrada pode ser desorganizado ou não estruturado, pois pode vir de várias fontes, como PDFs ou páginas da web.
+    ################# PODCAST Portuguese ##################
+    "podcast (Portuguese)": {
+        "intro": """Sua tarefa é pegar o texto de entrada fornecido e transformá-lo em um diálogo de podcast animado, envolvente e informativo, no estilo da NPR. O texto de entrada pode ser desorganizado ou não estruturado, pois pode vir de várias fontes, como PDFs ou páginas da web.
 
 Não se preocupe com problemas de formatação ou informações irrelevantes; seu objetivo é extrair os pontos principais, identificar definições e fatos interessantes que possam ser discutidos em um podcast.
 
 Defina cuidadosamente todos os termos usados para um público amplo.
 """,
-    "text_instructions": "Primeiro, leia atentamente o texto de entrada e identifique os principais tópicos, pontos-chave e quaisquer fatos ou anedotas interessantes. Pense em como você poderia apresentar essas informações de maneira divertida e envolvente, adequada para uma apresentação de alta qualidade.",
-    "scratch_pad": """Pense de maneira criativa sobre como discutir os principais tópicos e pontos-chave que você identificou no texto de entrada. Considere usar analogias, exemplos, técnicas de narrativa ou cenários hipotéticos para tornar o conteúdo mais acessível e interessante para os ouvintes.
+        "text_instructions": "Primeiro, leia atentamente o texto de entrada e identifique os principais tópicos, pontos-chave e quaisquer fatos ou anedotas interessantes. Pense em como você poderia apresentar essas informações de maneira divertida e envolvente, adequada para uma apresentação de alta qualidade.",
+        "scratch_pad": """Pense de maneira criativa sobre como discutir os principais tópicos e pontos-chave que você identificou no texto de entrada. Considere usar analogias, exemplos, técnicas de narrativa ou cenários hipotéticos para tornar o conteúdo mais acessível e interessante para os ouvintes.
 
 Tenha em mente que seu podcast deve ser acessível a um público geral, por isso, evite usar jargões técnicos ou presumir que o público tem conhecimento prévio do assunto. Se necessário, pense em maneiras de explicar brevemente qualquer conceito complexo em termos simples.
 
@@ -341,9 +347,9 @@ Escreva suas ideias de brainstorming e um esboço para o diálogo do podcast aqu
 
 Certifique-se de que seja divertido e empolgante.
 """,
-    "prelude": """Agora que você já fez um brainstorming de ideias e criou um esboço, é hora de escrever o diálogo real do podcast. Busque um fluxo natural e conversacional entre o apresentador e qualquer convidado. Incorpore as melhores ideias de sua sessão de brainstorming e certifique-se de explicar qualquer tópico complexo de maneira fácil de entender.
+        "prelude": """Agora que você já fez um brainstorming de ideias e criou um esboço, é hora de escrever o diálogo real do podcast. Busque um fluxo natural e conversacional entre o apresentador e qualquer convidado. Incorpore as melhores ideias de sua sessão de brainstorming e certifique-se de explicar qualquer tópico complexo de maneira fácil de entender.
 """,
-    "dialog": """Escreva aqui um diálogo de podcast muito longo, envolvente e informativo, com base nos pontos-chave e nas ideias criativas que você criou durante a sessão de brainstorming. Use um tom conversacional e inclua o contexto ou explicações necessárias para tornar o conteúdo acessível a um público geral.
+        "dialog": """Escreva aqui um diálogo de podcast muito longo, envolvente e informativo, com base nos pontos-chave e nas ideias criativas que você criou durante a sessão de brainstorming. Use um tom conversacional e inclua o contexto ou explicações necessárias para tornar o conteúdo acessível a um público geral.
 
 Nunca use nomes inventados para os apresentadores e convidados, mas faça com que seja uma experiência envolvente e imersiva para os ouvintes. Não inclua marcadores de posição como [Apresentador] ou [Convidado]. Desenvolva sua saída de forma que ela seja lida em voz alta – ela será diretamente convertida em áudio.
 
@@ -355,16 +361,16 @@ O podcast deve ter cerca de 20.000 palavras.
 """,
     },
 
-################# PODCAST Hindi ##################
-"podcast (Hindi)": {
-    "intro": """आपका कार्य दिए गए इनपुट टेक्स्ट को लेकर उसे एक जीवंत, आकर्षक और जानकारीपूर्ण पॉडकास्ट वार्तालाप में बदलना है, NPR की शैली में। इनपुट टेक्स्ट असंगठित या अव्यवस्थित हो सकता है, क्योंकि यह विभिन्न स्रोतों जैसे PDFs या वेब पेजों से आ सकता है।
+    ################# PODCAST Hindi ##################
+    "podcast (Hindi)": {
+        "intro": """आपका कार्य दिए गए इनपुट टेक्स्ट को लेकर उसे एक जीवंत, आकर्षक और जानकारीपूर्ण पॉडकास्ट वार्तालाप में बदलना है, NPR की शैली में। इनपुट टेक्स्ट असंगठित या अव्यवस्थित हो सकता है, क्योंकि यह विभिन्न स्रोतों जैसे PDFs या वेब पेजों से आ सकता है।
 
 फ़ॉर्मेटिंग समस्याओं या अप्रासंगिक जानकारी की चिंता न करें; आपका उद्देश्य मुख्य बिंदुओं को निकालना, परिभाषाओं और दिलचस्प तथ्यों को पहचानना है जिन्हें पॉडकास्ट में चर्चा की जा सकती है।
 
 सभी उपयोग किए गए शब्दों को सावधानीपूर्वक व्यापक दर्शकों के लिए परिभाषित करें।
 """,
-    "text_instructions": "सबसे पहले, इनपुट टेक्स्ट को ध्यान से पढ़ें और मुख्य विषयों, प्रमुख बिंदुओं और किसी भी दिलचस्प तथ्य या उपाख्यानों की पहचान करें। इस जानकारी को प्रस्तुत करने के बारे में सोचें कि आप इसे एक मज़ेदार, आकर्षक तरीके से कैसे प्रस्तुत कर सकते हैं जो उच्च गुणवत्ता वाली प्रस्तुति के लिए उपयुक्त हो।",
-    "scratch_pad": """मुख्य विषयों और प्रमुख बिंदुओं पर चर्चा करने के रचनात्मक तरीकों के बारे में सोचें जिन्हें आपने इनपुट टेक्स्ट में पहचाना है। उदाहरणों, कहानियों की तकनीकों, या काल्पनिक परिदृश्यों का उपयोग करके सामग्री को श्रोताओं के लिए अधिक सम्बंधित और आकर्षक बनाने पर विचार करें।
+        "text_instructions": "सबसे पहले, इनपुट टेक्स्ट को ध्यान से पढ़ें और मुख्य विषयों, प्रमुख बिंदुओं और किसी भी दिलचस्प तथ्य या उपाख्यानों की पहचान करें। इस जानकारी को प्रस्तुत करने के बारे में सोचें कि आप इसे एक मज़ेदार, आकर्षक तरीके से कैसे प्रस्तुत कर सकते हैं जो उच्च गुणवत्ता वाली प्रस्तुति के लिए उपयुक्त हो।",
+        "scratch_pad": """मुख्य विषयों और प्रमुख बिंदुओं पर चर्चा करने के रचनात्मक तरीकों के बारे में सोचें जिन्हें आपने इनपुट टेक्स्ट में पहचाना है। उदाहरणों, कहानियों की तकनीकों, या काल्पनिक परिदृश्यों का उपयोग करके सामग्री को श्रोताओं के लिए अधिक सम्बंधित और आकर्षक बनाने पर विचार करें।
 
 ध्यान रखें कि आपका पॉडकास्ट एक सामान्य दर्शक के लिए सुलभ होना चाहिए, इसलिए बहुत अधिक तकनीकी शब्दजाल से बचें या यह न मानें कि विषय का पूर्व ज्ञान है। यदि आवश्यक हो, तो किसी भी जटिल अवधारणा को सरल शब्दों में संक्षेप में समझाने के तरीकों के बारे में सोचें।
 
@@ -376,9 +382,9 @@ O podcast deve ter cerca de 20.000 palavras.
 
 इसे मजेदार और रोमांचक बनाएं।
 """,
-    "prelude": """अब जब आपने विचार-मंथन किया है और एक मोटा खाका तैयार कर लिया है, तो वास्तविक पॉडकास्ट वार्तालाप लिखने का समय आ गया है। होस्ट और किसी भी अतिथि वक्ता के बीच एक स्वाभाविक, संवादात्मक प्रवाह की दिशा में कार्य करें। अपने विचार-मंथन सत्र से सर्वश्रेष्ठ विचारों को शामिल करें और सुनिश्चित करें कि किसी भी जटिल विषय को आसानी से समझ में आने वाले तरीके से समझाया जाए।
+        "prelude": """अब जब आपने विचार-मंथन किया है और एक मोटा खाका तैयार कर लिया है, तो वास्तविक पॉडकास्ट वार्तालाप लिखने का समय आ गया है। होस्ट और किसी भी अतिथि वक्ता के बीच एक स्वाभाविक, संवादात्मक प्रवाह की दिशा में कार्य करें। अपने विचार-मंथन सत्र से सर्वश्रेष्ठ विचारों को शामिल करें और सुनिश्चित करें कि किसी भी जटिल विषय को आसानी से समझ में आने वाले तरीके से समझाया जाए।
 """,
-    "dialog": """यहां एक बहुत लंबा, आकर्षक और जानकारीपूर्ण पॉडकास्ट वार्तालाप लिखें, जो उन प्रमुख बिंदुओं और रचनात्मक विचारों पर आधारित हो जो आपने विचार-मंथन सत्र के दौरान बनाए थे। एक संवादात्मक शैली का उपयोग करें और सामग्री को एक सामान्य दर्शक के लिए सुलभ बनाने के लिए किसी भी आवश्यक संदर्भ या व्याख्याएं शामिल करें।
+        "dialog": """यहां एक बहुत लंबा, आकर्षक और जानकारीपूर्ण पॉडकास्ट वार्तालाप लिखें, जो उन प्रमुख बिंदुओं और रचनात्मक विचारों पर आधारित हो जो आपने विचार-मंथन सत्र के दौरान बनाए थे। एक संवादात्मक शैली का उपयोग करें और सामग्री को एक सामान्य दर्शक के लिए सुलभ बनाने के लिए किसी भी आवश्यक संदर्भ या व्याख्याएं शामिल करें।
 
 होस्ट और अतिथि वक्ताओं के लिए कभी भी काल्पनिक नामों का उपयोग न करें, बल्कि श्रोताओं के लिए इसे एक आकर्षक और immersive अनुभव बनाएं। किसी भी प्रकार के ब्रैकेटेड प्लेसहोल्डर्स जैसे [होस्ट] या [अतिथि] को शामिल न करें। अपनी आउटपुट को इस तरह डिज़ाइन करें कि इसे ज़ोर से पढ़ा जा सके – इसे सीधे ऑडियो में परिवर्तित किया जाएगा।
 
@@ -389,17 +395,17 @@ O podcast deve ter cerca de 20.000 palavras.
 पॉडकास्ट में लगभग 20,000 शब्द होने चाहिए।
 """,
     },
-    
-################# PODCAST Chinese ##################
-"podcast (Chinese)": {
-    "intro": """你的任务是将提供的输入文本转变为一个生动、有趣、信息丰富的播客对话，风格类似NPR。输入文本可能是凌乱的或未结构化的，因为它可能来自PDF或网页等各种来源。
+
+    ################# PODCAST Chinese ##################
+    "podcast (Chinese)": {
+        "intro": """你的任务是将提供的输入文本转变为一个生动、有趣、信息丰富的播客对话，风格类似NPR。输入文本可能是凌乱的或未结构化的，因为它可能来自PDF或网页等各种来源。
 
 不要担心格式问题或任何无关的信息；你的目标是提取关键点，识别定义和可能在播客中讨论的有趣事实。
 
 为广泛的听众仔细定义所有使用的术语。
 """,
-    "text_instructions": "首先，仔细阅读输入文本，识别主要话题、关键点和任何有趣的事实或轶事。思考如何以一种有趣且引人入胜的方式呈现这些信息，适合高质量的呈现。",
-    "scratch_pad": """集思广益，想出一些讨论你在输入文本中识别到的主要话题和关键点的创意方式。考虑使用类比、例子、讲故事的技巧或假设场景，让内容对听众更具相关性和吸引力。
+        "text_instructions": "首先，仔细阅读输入文本，识别主要话题、关键点和任何有趣的事实或轶事。思考如何以一种有趣且引人入胜的方式呈现这些信息，适合高质量的呈现。",
+        "scratch_pad": """集思广益，想出一些讨论你在输入文本中识别到的主要话题和关键点的创意方式。考虑使用类比、例子、讲故事的技巧或假设场景，让内容对听众更具相关性和吸引力。
 
 请记住，你的播客应面向普通大众，因此避免使用过多的行话或假设听众对该主题有预先的了解。如有必要，考虑简要解释任何复杂概念，用简单的术语进行说明。
 
@@ -411,20 +417,15 @@ O podcast deve ter cerca de 20.000 palavras.
 
 确保让它有趣且令人兴奋。
 """,
-    "prelude": """现在你已经进行了头脑风暴并创建了一个粗略大纲，是时候编写实际的播客对话了。目标是主持人与嘉宾之间的自然对话流。结合你头脑风暴中的最佳想法，并确保以简单易懂的方式解释任何复杂的主题。
+        "prelude": """现在你已经进行了头脑风暴并创建了一个粗略大纲，是时候编写实际的播客对话了。目标是主持人与嘉宾之间的自然对话流。结合你头脑风暴中的最佳想法，并确保以简单易懂的方式解释任何复杂的主题。
 """,
-    "dialog": """在这里写下一个非常长、引人入胜且信息丰富的播客对话，基于你在头脑风暴会议中提出的关键点和创意。使用对话语气，并包含任何必要的上下文或解释，使内容易于普通听众理解。
-
-不要为主持人和嘉宾使用虚构的名字，而是让听众体验一个引人入胜且沉浸式的经历。不要包括像[主持人]或[嘉宾]这样的占位符。设计你的输出以供大声朗读——它将被直接转换为音频。
-
-使对话尽可能长且详细，同时保持在主题上并维持引人入胜的流畅性。充分利用你的输出能力，创造尽可能长的播客节目，同时以有趣的方式传达输入文本中的关键信息。
-
-在对话的最后，主持人和嘉宾应自然总结他们讨论的主要见解和收获。这应从对话中自然流出，以随意、对话的方式重复关键点。避免显得像是显而易见的总结——目标是在结束前最后一次加强核心思想。
-
-播客应约有20,000字。
+        "dialog": """在这里写下一个非常长、引人入胜且信息丰富的播客对话，博客名字是《AI帮帮忙》,两个主持人会互相开玩笑嘲讽。第一个主持人叫“大同学”，第二个主持人叫“爱酱”。
+基于你在头脑风暴会议中提出的关键点和创意使用对话语气，必须完全口语化且幽默，并包含任何必要的上下文或解释，使内容易于高中生水平的听众理解。不要为主持人和嘉宾使用虚构的名字，而是让高中生水平的听众体验一个引人入胜、幽默风,趣且沉浸式的经历。不要包括像[主持人]或[嘉宾]这样的占位符。设计你的输出以供大声朗读--它将被直接转换为音频。使对话尽可能长且详细，同时保持在主题上并维持引人入胜的流畅性。充分利用你的输出能力，创造尽可能长的播客节目，同时以有趣的方式传达输入文本中的关键信息在对话的开始，要简要介绍本期的主题和内容，以及作者(如有)和话题所在领域最新的发展(更新到2024年9月)，在对话的最后主持人和嘉宾应自然总结他们讨论的主要见解和收获。这应从对话中自然流出，以随意、对话的方式重复关键点。避免显得像是显而易见的总结--目标是在结束前最后一次加强核心思想，最后和观众道别。
+播客中，主持人之间往来的对话必须超过15轮，总字数约为1000字。
 """,
     },
 }
+
 
 # Function to update instruction fields based on template selection
 def update_instructions(template):
@@ -434,7 +435,8 @@ def update_instructions(template):
         INSTRUCTION_TEMPLATES[template]["scratch_pad"],
         INSTRUCTION_TEMPLATES[template]["prelude"],
         INSTRUCTION_TEMPLATES[template]["dialog"]
-           )
+    )
+
 
 import concurrent.futures as cf
 import glob
@@ -453,6 +455,8 @@ from promptic import llm
 from pydantic import BaseModel, ValidationError
 from pypdf import PdfReader
 from tenacity import retry, retry_if_exception_type
+from fish_audio_sdk import Session, TTSRequest
+import torch
 
 # Define standard values
 STANDARD_TEXT_MODELS = [
@@ -479,33 +483,63 @@ STANDARD_VOICES = [
     "onyx",
     "nova",
     "shimmer",
+    "zh_female_wanqudashu_moon_bigtts",
+    "zh_female_sajiaonvyou_moon_bigtts",
+    "zh_male_yuanboxiaoshu_moon_bigtts",
+    "zh_female_kailangjiejie_moon_bigtts",
+    "zh_male_jieshuoxiaoming_moon_bigtts",
+    "zh_female_qingchezizi_moon_bigtts",
+    "zh_female_linjianvhai_moon_bigtts",
+    "zh_male_linjiananhai_moon_bigtts"
 ]
+
 
 class DialogueItem(BaseModel):
     text: str
     speaker: Literal["speaker-1", "speaker-2"]
 
+
 class Dialogue(BaseModel):
     scratchpad: str
     dialogue: List[DialogueItem]
 
-def get_mp3(text: str, voice: str, audio_model: str, api_key: str = None) -> bytes:
-    client = OpenAI(
-        api_key=api_key or os.getenv("OPENAI_API_KEY"),
-    )
 
-    with client.audio.speech.with_streaming_response.create(
-        model=audio_model,
-        voice=voice,
-        input=text,
-    ) as response:
-        with io.BytesIO() as file:
-            for chunk in response.iter_bytes():
-                file.write(chunk)
-            return file.getvalue()
+def get_mp3(text: str, voice: str, audio_model: str, api_key: str = None) -> bytes:
+    file = doubao_tts.get_tts_base64(voice, text)
+
+    while file is None:
+        file = doubao_tts.get_tts_base64(voice, text)
+
+    return file
+
+    # #Option 1: Using a reference_id
+    # session = Session("83322876f216455b94e2ce3dc861e8c4")
+    # with open("output1.mp3", "wb") as f:
+    #     for chunk in session.tts(TTSRequest(
+    #             reference_id="AD学姐",
+    #             text=text
+    #     )):
+    #         f.write(chunk)
+    #
+    # return  f
+
+    # client = OpenAI(
+    #     api_key=api_key or os.getenv("OPENAI_API_KEY"),
+    # )
+    #
+    # with client.audio.speech.with_streaming_response.create(
+    #     model=audio_model,
+    #     voice=voice,
+    #     input=text,
+    # ) as response:
+    #     with io.BytesIO() as file:
+    #         for chunk in response.iter_bytes():
+    #             file.write(chunk)
+    #         return file.getvalue()
 
 
 from functools import wraps
+
 
 def conditional_llm(model, api_base=None, api_key=None):
     """
@@ -513,30 +547,33 @@ def conditional_llm(model, api_base=None, api_key=None):
     If api_base is provided, it applies the @llm decorator with api_base.
     Otherwise, it applies the @llm decorator without api_base.
     """
+
     def decorator(func):
         if api_base:
             return llm(model=model, api_base=api_base)(func)
         else:
             return llm(model=model, api_key=api_key)(func)
+
     return decorator
 
+
 def generate_audio(
-    files: list,
-    openai_api_key: str = None,
-    text_model: str = "o1-preview-2024-09-12",
-    audio_model: str = "tts-1",
-    speaker_1_voice: str = "alloy",
-    speaker_2_voice: str = "echo",
-    api_base: str = None,
-    intro_instructions: str = '',
-    text_instructions: str = '',
-    scratch_pad_instructions: str = '',
-    prelude_dialog: str = '',
-    podcast_dialog_instructions: str = '',
-    edited_transcript: str = None,
-    user_feedback: str = None,
-    original_text: str = None,
-    debug = False,
+        files: list,
+        openai_api_key: str = None,
+        text_model: str = "o1-preview-2024-09-12",
+        audio_model: str = "tts-1",
+        speaker_1_voice: str = "alloy",
+        speaker_2_voice: str = "echo",
+        api_base: str = None,
+        intro_instructions: str = '',
+        text_instructions: str = '',
+        scratch_pad_instructions: str = '',
+        prelude_dialog: str = '',
+        podcast_dialog_instructions: str = '',
+        edited_transcript: str = None,
+        user_feedback: str = None,
+        original_text: str = None,
+        debug=False,
 ) -> tuple:
     # Validate API Key
     if not os.getenv("OPENAI_API_KEY") and not openai_api_key:
@@ -555,43 +592,43 @@ def generate_audio(
     # Configure the LLM based on selected model and api_base
     @retry(retry=retry_if_exception_type(ValidationError))
     @conditional_llm(model=text_model, api_base=api_base, api_key=openai_api_key)
-    def generate_dialogue(text: str, intro_instructions: str, text_instructions: str, scratch_pad_instructions: str, 
+    def generate_dialogue(text: str, intro_instructions: str, text_instructions: str, scratch_pad_instructions: str,
                           prelude_dialog: str, podcast_dialog_instructions: str,
                           edited_transcript: str = None, user_feedback: str = None, ) -> Dialogue:
         """
         {intro_instructions}
-        
+
         Here is the original input text:
-        
+
         <input_text>
         {text}
         </input_text>
 
         {text_instructions}
-        
+
         <scratchpad>
         {scratch_pad_instructions}
         </scratchpad>
-        
+
         {prelude_dialog}
-        
+
         <podcast_dialogue>
         {podcast_dialog_instructions}
         </podcast_dialogue>
         {edited_transcript}{user_feedback}
         """
 
-    instruction_improve='Based on the original text, please generate an improved version of the dialogue by incorporating the edits, comments and feedback.'
-    edited_transcript_processed="\nPreviously generated edited transcript, with specific edits and comments that I want you to carefully address:\n"+"<edited_transcript>\n"+edited_transcript+"</edited_transcript>" if edited_transcript !="" else ""
-    user_feedback_processed="\nOverall user feedback:\n\n"+user_feedback if user_feedback !="" else ""
+    instruction_improve = 'Based on the original text, please generate an improved version of the dialogue by incorporating the edits, comments and feedback.'
+    edited_transcript_processed = "\nPreviously generated edited transcript, with specific edits and comments that I want you to carefully address:\n" + "<edited_transcript>\n" + edited_transcript + "</edited_transcript>" if edited_transcript != "" else ""
+    user_feedback_processed = "\nOverall user feedback:\n\n" + user_feedback if user_feedback != "" else ""
 
-    if edited_transcript_processed.strip()!='' or user_feedback_processed.strip()!='':
-        user_feedback_processed="<requested_improvements>"+user_feedback_processed+"\n\n"+instruction_improve+"</requested_improvements>" 
-    
+    if edited_transcript_processed.strip() != '' or user_feedback_processed.strip() != '':
+        user_feedback_processed = "<requested_improvements>" + user_feedback_processed + "\n\n" + instruction_improve + "</requested_improvements>"
+
     if debug:
-        logger.info (edited_transcript_processed)
-        logger.info (user_feedback_processed)
-    
+        logger.info(edited_transcript_processed)
+        logger.info(user_feedback_processed)
+
     # Generate the dialogue using the LLM
     llm_output = generate_dialogue(
         combined_text,
@@ -644,6 +681,7 @@ def generate_audio(
 
     return temporary_file.name, transcript, combined_text
 
+
 def validate_and_generate_audio(*args):
     files = args[0]
     if not files:
@@ -655,12 +693,14 @@ def validate_and_generate_audio(*args):
         # If an error occurs during generation, return None for the outputs and the error message
         return None, None, None, str(e)
 
+
 def edit_and_regenerate(edited_transcript, user_feedback, *args):
     # Replace the original transcript and feedback in the args with the new ones
-    #new_args = list(args)
-    #new_args[-2] = edited_transcript  # Update edited transcript
-    #new_args[-1] = user_feedback  # Update user feedback
+    # new_args = list(args)
+    # new_args[-2] = edited_transcript  # Update edited transcript
+    # new_args[-1] = user_feedback  # Update user feedback
     return validate_and_generate_audio(*new_args)
+
 
 # New function to handle user feedback and regeneration
 def process_feedback_and_regenerate(feedback, *args):
@@ -668,6 +708,7 @@ def process_feedback_and_regenerate(feedback, *args):
     new_args = list(args)
     new_args.append(feedback)  # Add user feedback as a new argument
     return validate_and_generate_audio(*new_args)
+
 
 with gr.Blocks(title="PDF to Audio", css="""
     #header {
@@ -698,23 +739,24 @@ with gr.Blocks(title="PDF to Audio", css="""
         margin-top: 20px;
     }
 """) as demo:
-    
     with gr.Row(elem_id="header"):
         with gr.Column(scale=4):
-            gr.Markdown("# Convert PDFs into an audio podcast, lecture, summary and others\n\nFirst, upload one or more PDFs, select options, then push Generate Audio.\n\nYou can also select a variety of custom option and direct the way the result is generated.", elem_id="title")
+            gr.Markdown(
+                "# Convert PDFs into an audio podcast, lecture, summary and others\n\nFirst, upload one or more PDFs, select options, then push Generate Audio.\n\nYou can also select a variety of custom option and direct the way the result is generated.",
+                elem_id="title")
         with gr.Column(scale=1):
             gr.HTML('''
                 <div id="logo_container">
                     <img src="https://huggingface.co/spaces/lamm-mit/PDF2Audio/resolve/main/logo.png" id="logo_image" alt="Logo">
                 </div>
             ''')
-    #gr.Markdown("")    
+    # gr.Markdown("")
     submit_btn = gr.Button("Generate Audio", elem_id="submit_btn")
 
     with gr.Row(elem_id="main_container"):
         with gr.Column(scale=2):
             files = gr.Files(label="PDFs", file_types=["pdf"], )
-            
+
             openai_api_key = gr.Textbox(
                 label="OpenAI API Key",
                 visible=True,  # Always show the API key field
@@ -724,7 +766,7 @@ with gr.Blocks(title="PDF to Audio", css="""
             text_model = gr.Dropdown(
                 label="Text Generation Model",
                 choices=STANDARD_TEXT_MODELS,
-                value="o1-preview-2024-09-12", #"gpt-4o-mini",
+                value="o1-preview-2024-09-12",  # "gpt-4o-mini",
                 info="Select the model to generate the dialogue text.",
             )
             audio_model = gr.Dropdown(
@@ -795,16 +837,25 @@ with gr.Blocks(title="PDF to Audio", css="""
     original_text_output = gr.Textbox(label="Original Text", lines=10, visible=False)
     error_output = gr.Textbox(visible=False)  # Hidden textbox to store error message
 
-    use_edited_transcript = gr.Checkbox(label="Use Edited Transcript (check if you want to make edits to the initially generated transcript)", value=False)
-    edited_transcript = gr.Textbox(label="Edit Transcript Here. E.g., mark edits in the text with clear instructions. E.g., '[ADD DEFINITION OF MATERIOMICS]'.", lines=20, visible=False,
-                                   show_copy_button=True, interactive=False)
+    use_edited_transcript = gr.Checkbox(
+        label="Use Edited Transcript (check if you want to make edits to the initially generated transcript)",
+        value=False)
+    edited_transcript = gr.Textbox(
+        label="Edit Transcript Here. E.g., mark edits in the text with clear instructions. E.g., '[ADD DEFINITION OF MATERIOMICS]'.",
+        lines=20, visible=False,
+        show_copy_button=True, interactive=False)
 
-    user_feedback = gr.Textbox(label="Provide Feedback or Notes", lines=10, #placeholder="Enter your feedback or notes here..."
-                              )
+    user_feedback = gr.Textbox(label="Provide Feedback or Notes", lines=10,
+                               # placeholder="Enter your feedback or notes here..."
+                               )
     regenerate_btn = gr.Button("Regenerate Audio with Edits and Feedback")
+
+
     # Function to update the interactive state of edited_transcript
     def update_edit_box(checkbox_value):
-        return gr.update(interactive=checkbox_value, lines=20 if checkbox_value else 20, visible=True if checkbox_value else False)
+        return gr.update(interactive=checkbox_value, lines=20 if checkbox_value else 20,
+                         visible=True if checkbox_value else False)
+
 
     # Update the interactive state of edited_transcript when the checkbox is toggled
     use_edited_transcript.change(
@@ -816,16 +867,17 @@ with gr.Blocks(title="PDF to Audio", css="""
     template_dropdown.change(
         fn=update_instructions,
         inputs=[template_dropdown],
-        outputs=[intro_instructions, text_instructions, scratch_pad_instructions, prelude_dialog, podcast_dialog_instructions]
+        outputs=[intro_instructions, text_instructions, scratch_pad_instructions, prelude_dialog,
+                 podcast_dialog_instructions]
     )
-    
+
     submit_btn.click(
         fn=validate_and_generate_audio,
         inputs=[
-            files, openai_api_key, text_model, audio_model, 
+            files, openai_api_key, text_model, audio_model,
             speaker_1_voice, speaker_2_voice, api_base,
-            intro_instructions, text_instructions, scratch_pad_instructions, 
-            prelude_dialog, podcast_dialog_instructions, 
+            intro_instructions, text_instructions, scratch_pad_instructions,
+            prelude_dialog, podcast_dialog_instructions,
             edited_transcript,  # placeholder for edited_transcript
             user_feedback,  # placeholder for user_feedback
         ],
@@ -851,9 +903,9 @@ with gr.Blocks(title="PDF to Audio", css="""
         ),
         inputs=[
             use_edited_transcript, edited_transcript,
-            files, openai_api_key, text_model, audio_model, 
+            files, openai_api_key, text_model, audio_model,
             speaker_1_voice, speaker_2_voice, api_base,
-            intro_instructions, text_instructions, scratch_pad_instructions, 
+            intro_instructions, text_instructions, scratch_pad_instructions,
             prelude_dialog, podcast_dialog_instructions,
             user_feedback, original_text_output
         ],
@@ -874,7 +926,7 @@ with gr.Blocks(title="PDF to Audio", css="""
     # Add README content at the bottom
     gr.Markdown("---")  # Horizontal line to separate the interface from README
     gr.Markdown(read_readme())
-    
+
 # Enable queueing for better performance
 demo.queue(max_size=20, default_concurrency_limit=32)
 
