@@ -7,9 +7,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import List, Literal
 
-import ChatTTS
 import gradio as gr
-import torchaudio
 
 from loguru import logger
 from openai import OpenAI
@@ -455,8 +453,6 @@ from promptic import llm
 from pydantic import BaseModel, ValidationError
 from pypdf import PdfReader
 from tenacity import retry, retry_if_exception_type
-from fish_audio_sdk import Session, TTSRequest
-import torch
 
 # Define standard values
 STANDARD_TEXT_MODELS = [

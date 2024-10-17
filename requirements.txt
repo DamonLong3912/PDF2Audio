@@ -1,4 +1,4 @@
-gradio
+gradio==4.44.1
 pandas
 openai
 pypdf
